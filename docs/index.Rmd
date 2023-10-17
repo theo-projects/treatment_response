@@ -1,0 +1,1172 @@
+---
+title: "Treatment Response Study"
+author: "Théo Dufort"
+date: "29 October 2020"
+output:
+  # prettydoc::html_pretty: #Does not work with code folding and with tabs
+  #     theme: hpstr
+  #     highlight: github 
+  #     toc: true # table of content true
+  #     toc_depth: 3  # upto three depths of headings (specified by #, ## and ###)
+  #     fig.caption: TRUE
+  #     fig_height: 6  ## Default: should change if specified otherwise
+  
+  # rmdformats::material:
+  #     theme: united
+  #     highlight: tango
+  #     code_folding: hide
+  #     # toc: true # table of content true
+  #     toc_depth: 2  # upto three depths of headings (specified by #, ## and ###)
+  #     fig.caption: TRUE
+  #     fig_height: 6  ## Default: should change if specified otherwise
+  html_document:
+    toc: true # table of content true
+    toc_depth: 3  # upto three depths of headings (specified by #, ## and ###)
+   # number_sections: true  ## if you want number sections at each table header
+    theme: united #cerulean #readable  # many options for theme, this one is my favorite.
+    highlight: tango  # specifies the syntax highlighting style
+    code_folding: hide
+    fig.caption: TRUE
+    fig_height: 6  ## Default: should change if specified otherwise
+    
+  pdf_document: default
+always_allow_html: true
+
+
+---
+<style type="text/css">
+  h1.title {
+    text-align: center;
+  }
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    color: Grey;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+    color: Grey;
+  text-align: center;
+}
+</style>
+
+
+***
+# STUDY CASE
+
+*A hospital ABC collected data in patients with a given cancer. The initial follow-up visit, which took place
+before treatment initiation, allowed to collect clinical and radiomics data for each patient. Then, all patients
+were treated with the same treatment Z and followed until progression, death or censoring.*
+
+***
+
+**PRIMARY OBJECTIVE** : Treatment response was evaluated 3 months after treatment initiation. Clinicians’ question is whether it is possible to predict, before treatment initiation, if a given patient will or won’t respond to treatment.
+
+***
+**SECONDARY OBJECTIVE:** Each patient was followed after treatment initiation until progression, death. Some patients were censored (e.g., lost of follow-up). Clinicians want to predict Progression-Free Survival (PFS) probability over time for each patient, based on the information collected at treatment initiation time.
+
+***
+
+
+
+```{r setup,results='hide',message=FALSE, warning=FALSE}
+
+### Import all libraries
+library(readr) ## import data
+library(dplyr) ## Create summary tables
+library(DT) ## table aesthetic
+library(ggplot2) ## for graphs
+library(scales) ## To get proper plot ticks
+library(grid)  ## For several plots on one image
+library(reshape2) ## to go from matrix to relationship table
+library(caret) ## For machine leraning algorithms
+library(car) ## To get Variance Inflatio Factors
+library(bestNormalize) ## data transformation (to gaussian distributions)
+library(glmnet) ## for LASSO
+library(ggRandomForests) # For Random Survival Forest
+
+
+### Import dataset
+### Before importing, replaced commas with dots and semi colons with commas in csv for better reading
+cancer_dat <- read_csv(paste0(here::here(),"/data_challenge_updated.csv"), 
+                       col_types = cols(X1 = col_skip(),
+                                        ID = col_skip()))
+cancer_dat = as.data.frame(cancer_dat)
+
+## initial data treatment
+cancer_dat$Treatment.response= as.factor(cancer_dat$Treatment.response)
+cancer_dat$Sex = as.factor(cancer_dat$Sex)
+
+```
+
+***
+# PRIMARY OBJECTIVE
+
+
+*Treatment response was evaluated 3 months after treatment initiation. Clinicians’ question is whether it is
+possible to predict, before treatment initiation, if a given patient will or won’t respond to treatment.*
+
+***
+## DESCRIPTIVE ANALYSIS
+
+
+In this part of the study, we get familiar with the dataset at hand. First we look at what the variables represent and how they are distributed. Then, we propose new features that could be pertient for our future model(s). finally, we start looking at the different variables' 2 by 2 relatonships; first focusing on connections between the target variable and the others, then observing the correlation between features.
+
+***
+### UNIVARIATE ANALYSIS
+
+
+__*Question 1. "Perform a descriptive analysis of the data."*__
+
+
+The dataset involves 300 patients (rows) with the following outcome^[Also called "Target", "Target Variable" and "Dependent Variable" in this work]: Treatment.response ("No": non-responder, "Yes": responder).^[We assume that each of the 300 patients presents only one malignant lesion, whose radiomic features are recorded in the dataset]
+
+The other columns depict individual prognostic features^[Also called "Features", "Factors", "Explanatory Variables" and "Independent Variables" in this work] :
+
+**1) Demographics features:**
+
+- Sex (1: Female, 2: Male)
+- Age (in years)
+- Weight (in kg)
+
+
+**2) [Radiomics Features](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6234198/)^[Also called "Biomarkers" in this work]:**
+
+**a) Shape features** describe the shape of the traced region of interest -ROI- (or lesion) and its geometric properties
+
+- *Surface.cm2*: the lesion's computed surface (in cm^2^)
+- *Volume.cm3*: The lesion's computed volumed (in cm^3^)
+- *Recist.cm* : Value/Criterion derived from RECIST (Response Evaluation Criteria In Solid Tumors), a set of published rules that define when tumors in cancer patients improve ("respond"), stay the same ("stabilize"), or worsen ("progress") during treatment.
+
+**b) First-order statistics features** describe the distribution of individual voxel values without concern for spatial relationships (after investigation of the following [document](https://arxiv.org/pdf/1612.07003.pdf) it is assumed the variables with names ending with "value.stat" correspond to Intensity-based statistical features)
+
+- *Number.of.grey.levels*: Number of grey levels found in radio's ROI
+- *Min.value.stat*: Minimum value of the voxels' intensity distribution in the ROI
+- *Max.value.stat*: Maximum value of the voxels' intensity distribution in the ROI
+- *Median.value.stat*: Median value of the voxels' intensity distribution in the ROI
+- *Skewness.stat*: Skewness of the voxels' intensity distribution in the ROI
+- *Standard.deviation.stat*: Standard deviation of the voxels' intensity distribution in the ROI
+
+**c) Second-order statistics features** include the so-called textural features, which are obtained calculating the statistical inter-relationships between neighbouring voxels. Note: GLCM stands for Grey Levels Co-ocurrence Matrix.
+
+- *Contrast.GLCM*: Assesses grey level variations. Large difference in grey levels within ROI increase feature value.
+- *Homogeneity.GLCM* (or *Inverse difference moment*):Large difference in grey levels within ROI lower feature value. Maximal if all grey levels are the same. 
+
+
+
+```{r univariate table functions,results='hide',message=FALSE, warning=FALSE}
+
+### function to present tables in documents
+show_table <- function(temp_sum, rownames = FALSE) {
+  DT::datatable(temp_sum, rownames = rownames, filter = "top",class = 'cell-border stripe', editable = TRUE, 
+                extensions = 'Buttons', options = list(dom = 'rtip', #dom = 'lBfrtip',
+                                                       #buttons = c('copy', 'csv', 'excel',  'print'),
+                                                       autoWidth=TRUE, #scrollX=TRUE,
+                                                       lengthChange=TRUE,
+                                                       pageLength=20))
+}
+
+### function to get summary of qualitative
+get_qualitative_summary <- function(data) {
+  categoricaldata=data.frame(matrix(ncol=5))
+  columns = c("Variables","Variable_Levels","Frequency", "Percentage","Distinct_Values")
+  colnames(categoricaldata)= columns
+  for(i in 1:length(data)){
+    if(is.factor(data[,i])&!all(is.na(data[,i]))){
+      Summ=as.data.frame(summary(data[,i], maxsum = 20, stats = TRUE))
+      Categories=rownames(Summ)
+      Percentage=round((Summ*100)/sum(Summ),4)
+      Variable=rep(colnames(data)[i],nrow(Summ))
+      Distinct.Values=length(unique(data[,i]))
+      table=cbind(Variable,Categories,Summ,Percentage,Distinct.Values)
+      colnames(table)=columns
+      categoricaldata=rbind(categoricaldata,table)
+    }
+  }
+  categoricaldata=categoricaldata[-1,]
+  return(categoricaldata)
+}
+
+
+### function to get summary of quantitative features
+get_quantitative_summary <- function(data) {
+  
+  Quant_feats = colnames( select_if(data, is.numeric) )
+  quant_sum = data.frame(Quant_feats, Min=NA,  Mean=NA, Median=NA,Max=NA,
+                         Missing_Observations=NA)
+  
+  for( i in 1:length(Quant_feats)){
+    quant_sum$Min[i] = min( data[,Quant_feats[i]], na.rm=T) 
+    quant_sum$Mean[i] =  round(mean( data[,Quant_feats[i]], na.rm = T),3)
+    quant_sum$Median[i] =  median(data[,Quant_feats[i]], na.rm = T)
+    quant_sum$Max[i] =  max( data[,Quant_feats[i]], na.rm = T)
+    quant_sum$Missing_Observations[i] =  sum(is.na(data[,Quant_feats[i]]))
+    
+  }
+  return(quant_sum)
+}
+
+```
+
+
+####  Summary Tables
+
+
+Find below a summary table of the numerical variables in the dataset:
+
+```{r,message=FALSE, warning = FALSE, tab.cap="Table 1."}
+# Get summary table output
+quant_sum = get_quantitative_summary(cancer_dat)
+show_table(quant_sum)
+```
+
+
+It gives us an initial overview of the numerical features, with their minimum and maximum values, along with their average and median values and the number of missing observations.
+
+We observe that 2 of these variables, namely *Weight* and *Recist.cm*, have missing values. It is important to keep that in mind for the data pre-processing step. 
+
+Next, a summary table of the Categorical variables in the dataset:
+
+```{r,message=FALSE, warning = FALSE}
+# Get summary table output
+qual_sum = get_qualitative_summary(cancer_dat)
+show_table(qual_sum)
+```
+
+There are only two of qualitative variables. The table lists the different classes for these factors, along with their frequency, percentage and distinct values. Missing values are treated as classes, hence we can see that there is none here. 
+
+We can observe that the target variable is imbalanced (Response to Treatment does not appear in the same proportions). This will have implications later during modelling. 
+
+
+***
+#### Distribution Plots
+
+```{r distribution plot functions,message=FALSE, warning = FALSE}
+## Function to plot simple distributions of quantitative features
+get_distribution_hist = function(data, column){
+  
+  p=ggplot(data) +
+    #"darkgreen" "forestgreen" '#08519c' 'dodgerblue4'
+    geom_density(aes_string(x= column),
+                 fill = 'forestgreen', alpha = 0.4) +
+    geom_histogram(aes_string(x= column,y="..density.."),
+                   colour= "black",fill= 'dodgerblue4',
+                   alpha = 0.7,bins = 25) +
+    geom_vline(xintercept= mean(data[,column], na.rm=T),size=0.8,linetype=5) +
+    ggtitle(paste0("Distribution of ",column))+
+    labs( x=column, y="Density")+
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+    scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+    theme(
+      text = element_text(size=14,face="bold"),
+      plot.title = element_text(hjust = 0.5,size=16),
+      axis.text.x =element_text(hjust=1,vjust=0.9),
+      plot.margin = unit(c(0.8,0.8,0.8,0.8), "cm"))
+  
+  return(p)
+}
+
+
+## Function to plot simple distributions of quantitative features
+get_distribution_bar = function(data, column){
+  p=ggplot(data) +
+    #"darkgreen" "forestgreen" '#08519c' 'dodgerblue4'
+    geom_bar(aes_string(x= column),
+             colour= "black",fill= 'dodgerblue4', alpha = 0.8) +
+    
+    ggtitle(paste0("Distribution of ",column))+
+    labs( x=column, y="Frequency")+
+    scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+    theme(
+      text = element_text(size=14,face="bold"),
+      plot.title = element_text(hjust = 0.5,size=16),
+      axis.text.x =element_text(hjust=1,vjust=0.9),
+      plot.margin = unit(c(0.8,0.8,0.8,0.8), "cm"))
+  
+  return(p)
+}
+
+# Save current quantitative variable names
+Quant_feats = colnames(cancer_dat %>% select_if(is.numeric))
+# Save current qualitative variable names
+Quali_vars = colnames(cancer_dat %>% select_if(is.factor))
+
+## Save all resulting plots in list object
+gg0 <- list()
+for( i in Quant_feats){
+  gg0[[i]] = get_distribution_hist(cancer_dat, i)
+}
+for( i in Quali_vars){
+  gg0[[i]] = get_distribution_bar(cancer_dat, i)
+  
+}
+
+```
+
+
+To understand better how the variables are distributed, we plot them in different tabs:
+
+####  {.tabset}
+```{r, results='asis', warning=FALSE,  fig.align="center"}
+# Save current variable names
+Variables = colnames(cancer_dat)
+
+# Display variable distribution plots in different tabs
+for (Var in Variables) {
+  cat("##### ",Var,"\n")
+  print(gg0[[Var]])
+  cat('\n\n')
+}
+
+```
+
+#### 
+
+
+Barplots are used to display categorical distributions, and histograms and juxtaposed density plots are used for numerical distributions. 
+
+We can observe that several of the features are right skewed, in particular *surface.cm2*, *Volume.cm3*, *Max.value.stat* and *contrast.GLCM*. On the other hand, *Number.of.grey.levels* looks more normally distributed. 
+
+
+
+***
+### NEW VARIABLES
+
+
+Given the amount of observations in our data, and the need for explainability of the model, we will not use 2 by 2 interactions features for predictions as this would reduce the number of degrees of freedom, affect the robustness of our models, and also create high correlations beween variables which can make the assessment of features' importance difficult if not impossible due to multicollinearity. 
+However, we can 'manually' derive new biomarkers if we believe these can be pertinent variables to add to our model. Hence, we proceed to create the following features:
+
+- *Surface to Volume ratio* (cm^-1^)
+- *Compactness 1* which is chosen arbitrarily among several similar variables to quantify the deviation of lesion's volume from a representative spheroid
+-  *Intensity Range* ( Intensity Interquartile Range would probably be a more appropriate measure as less affected by outliers, however we do not have Intensity percentiles available ) 
+
+
+```{r initiate new variables,message=FALSE, warning = FALSE}
+## Add new variables
+cancer_dat = cancer_dat %>% mutate(Surface.volume.ratio = Surface.cm2/Volume.cm3,
+                                   Compactness.1 = Volume.cm3/(pi^(1/2)*Surface.cm2^(3/2)),
+                                   Intensity.range = Max.value.stat - Min.value.stat)
+## update quantitative variable names
+Quant_feats = colnames(cancer_dat %>% select_if(is.numeric))
+```
+
+The distribution of these new features is displayed in the plots below:
+
+
+####  {.tabset}
+```{r, results='asis', warning=FALSE,  fig.align="center"}
+# Save current variable names
+Variables = c("Surface.volume.ratio","Compactness.1","Intensity.range")
+
+# Save plots in list object
+gg0 <- list()
+for( i in Variables){
+  gg0[[i]] = get_distribution_hist(cancer_dat, i)
+}
+
+# Display variable distribution plots in different tabs
+for (Var in Variables) {
+  cat("##### ",Var,"\n")
+  print(gg0[[Var]])
+  cat('\n\n')
+}
+
+```
+
+#### 
+
+Again we observe that these variables display a right-skewed distribution.
+
+
+***
+### BIVARIATE ANALYSIS
+
+In this step of the analysis we examine the 2 by 2 relationships of the different variables in the dataset.  
+
+***
+#### BETWEEN TARGET AND EXPLANATORY VARIABLES
+
+__*Question 2. "Is there any difference between non-responder and responder patients according to their pre-treatment
+individual features?"*__
+
+
+First, we focus on the connections of the dependent variable (*Treatment.response*) with each independent variable. 
+
+These relationships are plotted in the tabs below, using boxplot and density visualisations.
+
+
+####  {.tabset}
+
+```{r, warning=FALSE, message=FALSE, results='asis', fig.align="center",  fig.height = 7}
+
+## Function to plot boxplot distributions of quantitative features relative to categorical response
+get_distribution_boxplot = function(data, column, cat_response){
+  
+  # boxplot code
+  p=ggplot(data,aes_string(x=cat_response, y=column, fill = cat_response)) +
+    #"darkgreen" "forestgreen" '#08519c' 'dodgerblue4'
+    geom_violin( alpha = 0.3 ) +
+    geom_boxplot(alpha = 0.7) +
+    labs( x=cat_response, y=column, title="")+
+    scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+    scale_fill_manual(values=c('hotpink3', 'dodgerblue4')) +
+    theme(
+      legend.position="none",
+      axis.title.x = element_blank(),
+      text = element_text(size=14,face="bold"),
+      axis.text.x = element_blank()
+    )+
+    coord_flip()
+  
+  # density plot code
+  p2=ggplot(data,aes_string(x=column, fill = cat_response)) +
+    geom_density(position = "fill", alpha = 0.8)+
+    labs( x=column, y="Density", title ="") +
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+    scale_fill_manual(values=c('hotpink3', 'dodgerblue4')) +
+    theme(
+      legend.position="bottom",
+      text = element_text(size=14,face="bold")
+    )
+  # title plot
+  title = paste0("Distribution of ",column," for \nDifferent Levels of ",cat_response)
+  
+  return(list(title,p,p2))
+}
+
+# Get plots of quantitative features in list object
+gg0 <- list()
+for( i in Quant_feats){
+  gg0[[i]] = get_distribution_boxplot(cancer_dat, i, "Treatment.response")
+}
+
+# display plots in tabs
+for (Feature in Quant_feats) {
+  cat("##### ",Feature,"\n")
+  grid.newpage()
+  pushViewport(viewport(layout = grid.layout(3, 1, heights = unit(c(2, 10, 13), "null"))))
+  print(gg0[[Feature]][[2]], vp = viewport(layout.pos.row = 2, layout.pos.col = 1))
+  print(gg0[[Feature]][[3]], vp = viewport(layout.pos.row = 3, layout.pos.col = 1))
+  grid.text(gg0[[Feature]][[1]],gp = gpar(fontsize = 16, fontface="bold"), vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+  cat('\n\n')
+}
+
+```
+
+####
+
+These graphs represent the distribution of numerical variables (hence *Sex* is excluded and treated later) for different values of the categorical variable *Treatment.response*. Some correlations can be inferred just by looking at the plots. For example in the **Weight** tab, it is clear that the distribution of patients' weight is different depending on the Treatment Response: A negative response corresponds to a weight on average higher.
+
+These plots give a good visual intuition of the relationships. However, we need to verify the existence of these correlations statistically.  
+
+To evaluate whether there is a connection between two variables, we have several measures at our disposal. However when it comes to assessing Categorical variable - Numerical variable associations, a good way to proceed is to run a simple logistic regression (one regression for each individual feature). 
+An advantage is that continuous variables do not have to be normally distributed or have equal variance in each group to compute it (Good, as we observed it was not the case for several of our variables). This measure is sensitive to class imbalance, but the imbalance between positive and negative treatment responses is moderate and should not affect our results significantly at this stage. 
+
+Hence, we run a logistic regression for each numeric feature in the data, with target variable staying the same, namely *Treatment.response*. From each of these simple models, we extract the variable coefficient as well as its p-value:
+
+```{r individual logistic regressions,message=FALSE, warning = FALSE}
+# initialisation
+logistic_models = list()
+logistic_results = data.frame(Quant_feats, Coefficient=NA,P_value=NA)
+
+# train all individual logistic regressions and save results in objects
+for(i in 1:length(Quant_feats)){
+  logistic_models[[Quant_feats[i]]]= train(Treatment.response~.,
+                                           data = cancer_dat[,c("Treatment.response",Quant_feats[i])],
+                                           method="glm",family="binomial",
+                                           na.action = na.pass) ## Exclude na observations
+  logistic_results$Coefficient[i] = round(coef(summary(logistic_models[[Quant_feats[i]]]))[2,1],4)
+  logistic_results$P_value[i] = round(coef(summary(logistic_models[[Quant_feats[i]]]))[2,4],4)
+  
+}
+
+# display summary table
+show_table(logistic_results)
+
+```
+
+
+The p-values help us decide whether the relationship is statically significant, and the variables' coefficients indicate the nature of this relationship (in particular its direction, positive or negative).
+
+For example, the number of grey levels has a p-value of 0.055, hence we fail to reject the null hypothesis (H0:Coefficient = 0) at the 5% level. However we can reject it at the 10% level, which means the relationship is significant at the 10% level. According to the corresponding coefficient's sign, this relationship is negative (-0.0008): The higher the number of grey levels, the less likely the treatment response is to be positive. 
+
+To observe the relationship between our only categorical feature (*Sex*) with our dependent variable, we produce a contigency table: Treatment response - Sex:
+
+```{r,  message=FALSE}
+# Create contingency table
+cont_table=table(cancer_dat$Treatment.response, cancer_dat$Sex)
+
+#format for display
+colnames(cont_table) = c(paste0("Sex.",colnames(cont_table)))
+rownames(cont_table) = c(paste0("Treatment.response.",rownames(cont_table)))
+cont_table = as.data.frame.matrix(cont_table)
+
+# display table
+show_table(cont_table, rownames=TRUE)
+```
+
+
+Just observing the table, we can guess that there is a correlation between the two variables, as the Sex distribution is very different whether we look at the positive or negative Treatment response. However to be sure, we run a Chi-squared test where the null hypothesis is H0: Row and column variables are independent. 
+
+
+```{r,  message=FALSE}
+# run chi square test
+chisq.test(cancer_dat$Treatment.response, cancer_dat$Sex)
+```
+
+p-value = 0,0000, hence we can reject the null hypothesis at the 5% level: Treatment Response and Patient's Sex are correlated. 
+
+**To conclude, we observe statistical differences between non-responder and responder patients according to their pre-treatment individual features.**
+
+***
+#### BETWEEN FEATURES
+
+
+In this work, there is a need for explainability of the model and the impact of its features on the predictions; hence, it is important to study the relationships between the different input features in order the identify potentially high correlations, which could lead to multicollinearity in the models and make their interpretation difficult.
+
+To analyse these connections, we need an appropriate correlation metric. Most of the features are numerical, except for *Sex* which is binary, hence metrics such are Pearson and Spearman are suited for this application. We opt for Spearman correlation coefficient as it is a ranking-based correlation, and can capture non-linear relationship between variables. 
+
+We compute the 2 by 2 correlations for all factors and save them in the following matrix: 
+```{r correlation matrix function,message=FALSE, warning = FALSE, fig.align="center"}
+### Convert factor to dummies 
+cancer_dat$Sex = ifelse(as.character(cancer_dat$Sex=="1"),1,0)
+cancer_dat= cancer_dat %>% rename(  Sex.female = Sex)
+Quali_vars = c("Treatment.response","Sex.female")
+
+# Setup correlation function
+get_correlation_matrix = function(data){
+  
+  data = data %>% select_if(is.numeric)
+  cormat <- round(cor(data, method = "spearman", use="pairwise.complete.obs"),2)
+  melted_cormat <- melt(cormat)
+  melted_cormat$p.value = NA
+  for(i in 1:nrow(melted_cormat)){
+    res = cor.test(data[,melted_cormat$Var1[i]], data[,melted_cormat$Var2[i]],
+                   method = "spearman")
+    melted_cormat$p.value[i] = round(res$p.value,4)
+  }
+  return(melted_cormat)
+}
+
+# Set up correlation plot function
+plot_correlation_matrix= function(melted_cormat){
+  p= ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+    geom_tile(color = "white")+
+    geom_text(aes(label = round(value, 2)), size=2.5) +
+    scale_fill_gradient2(low = 'hotpink3' , high ='dodgerblue4', mid = "white",
+                         midpoint = 0, limit = c(-1,1), space = "Lab",
+                         name="Spearman\nCorrelation") +
+    labs(title = "Spearman Correlation Matrix for \nQuantitative Features",
+         x= "Quantitative Features", y= "Quantitative Features") +
+    theme(
+      text = element_text(size=10,face="bold"),
+      plot.title = element_text(hjust = 0.5,size=16),
+      axis.text.x =element_text(hjust=1,vjust=0.9, angle=45),
+      axis.title.x = element_text(size=14),
+      axis.title.y = element_text(size=14),
+      plot.margin = unit(c(0.8,0.8,0.8,0.8), "cm"))
+  
+  return(p)
+}
+
+#Get correlation matrix and display plot
+mat = get_correlation_matrix(cancer_dat)
+plot_correlation_matrix(mat)
+
+```
+
+
+There is a lot of information on the visualisation. White cells indicate little correlation between the variables, blue cells indicate strong positive correlations and pink cells indicate strong negative correlations. 
+
+We observe that *Surface.cm2* and *Volume.cm3* are highly correlated together. As a concequence, *Surface.volume.ratio* is also very (negatively) correlated to both of them. *Recist.cm* seems very correlated to them as well.
+Moreover, Intensity Range is extremely correlated to the Maximum Intensity.
+
+These create a risk of multicollinearity in our future models. In order not to lose model interpretability, we might need to exclude one of several of the factors from the list of input variables later on. 
+
+***
+## PREDICTIONS
+
+
+__*Question 3. "Propose and implement several algorithms to deal with the primary objective. You should motivate
+the choice of the models and evaluate their predictive performances (argue the choice of the model
+validation technique, model tuning parameters, metrics, etc.)."*__
+
+In machine learning, there is something called the “No Free Lunch” theorem: No one algorithm works well for every situation. Hence, there is a need for several different models to be trained and tested to evaluate which one is the best for our specific problem.
+
+Here, we focus on supervised learning, more specifically (binary) classification, as the response variable is categorical, with 2 possible outcomes ("Yes" or "No").
+
+Below is a non exhaustive list of the main binary classification algorithms: 
+
+- Decision Trees
+- Logistic Regression
+- K-Nearest Neighbors (KNN)
+- Random Forest
+- Gradient Boosting
+- Support Vector Machine (SVM)
+- Neural Networks (NNs)
+
+
+To choose which ones are most appropriate for our work, there are several factors to take into account:
+
+- Data sample size vs. Model complexity
+- Degree of Explainability
+- Performance
+
+We are working with a dataset of 300 observations (patients), which is considered to be small from a machine learning point of view. Most of the algorithms mentioned above are too complex to be trained with so few data points; this would lead to overfitting the training set and the resulting model would not be robust. Hence, we focus on classifiers that need no or little hyperparameter tuning. We also need to use algorithms that allow for interpretation as an assessment of the variables impact on the predictions is required. 
+
+We review the different candidates:
+
+- **NNs**: These are deep learning models and require too many observations to be considered. __*- Rejected*__
+- **SVM**: This algorithm is adapted for higher-dimension problems, plus hyperparameters tuning and choice of kernel function must be done carefully. Training for these require more data than we have.  __*- Rejected*__
+- **Gradient Boosting**: This model has a similar problem: There are many hyperparameters to tune.  __*- Rejected*__
+
+- **Random Forest**: This algorithm only needs a managable amount of hyperparameter tuning. Moreover the problem of overfitting is minimised as Random Forest considers only a subset of features per tree, and the final outcome depends on all the trees; this process generalises well. Finally, this model is useful to extract feature importance, which is a good indicator of how the variables impact the predictions. __*- Selected*__
+
+- **KNN**: This algorithm is adapted to smaller datasets; it has only one hyperparameter to tune (K). There are a many initial conditions to fulfill before running it (deal with outliers, scale and balance data, handle missing values etc... ) but this is something that we can take care of during the pre-processing phase. Unfortunately, there is no way for us to interpret the impact of the features on the predictions with this model.  __*- Rejected*__
+
+- **Logistic regression**: This is a relatively simple model, and it is well suited for small data samples; there are no hyperparameter to tune. Moreover, it has a high degree of explainability as the variables' coefficients can be interpreted. __*- Selected*__
+
+- **Decision Tree:** Although there is no complexity or explainability issue with this model, the algorithm is too "simple" and is expected to yield bad results as compared to the other models we chose. __*- Rejected*__
+
+
+
+To summarise, the models selected for further work are the Logistic Regression and the Random Forest.
+
+
+***
+### PRE-PROCESSING
+
+In the preprocessing phase, we first split the dataset between training and test sets. The first is used to tune the hyperparameters and train the models, the second is left out until the end and is used to evaluate the models' performances on new, unseen data. After this, we handle potential outliers, impute missing values and potentially apply data transformations (more on this later). Finally, we proceed to feature selection.
+
+
+***
+#### TRAINING-TEST SPLIT
+
+In this step, the patients are divided in two groups: training and test sets. 70% of observations go to training and the 30% remaining go to test. This split is applied randomly, however it is stratified using the *Treatment.response* classes in order to keep the proportions of positive and negative responses the same from one group to the other. 
+
+
+```{r,message=FALSE}
+## Divide data into training and test 70/30
+set.seed(3456)
+trainIndex <- createDataPartition(cancer_dat$Treatment.response, p = .7, 
+                                  list = FALSE, 
+                                  times = 1)
+train_dat<-cancer_dat[trainIndex,]
+test_dat<-cancer_dat[-trainIndex,]
+```
+
+
+***
+#### OUTLIERS
+
+
+There are some extreme values in the features, easily visible on the different distribution plots in the univariate analysis, however these can be expected in skewed distributions such as the ones we are working with (*Surface.cm2* and *Volume.cm3* variables for example). They do not appear to be due to accidents in measurement or data entry.
+Hence, the need for intervention on these "outliers" is debatable. 
+We could use large lower and upper limits based on interquartile range -IQR- (As a rule of thumb, we usually use 1.5*IQR above Q3 and under Q1 for Normal distributions) to cap the variables' extreme values. Otherwise, we could apply transformations to skewed variables to make them more "Gaussian-distributed" (such as Box Cox tranformation, Yeo-Johnson transformation, etc...) and then see if these observations still appear like outliers.
+
+Rather that directly exclude the suspected outliers, we decide to opt for the second option and 'standardise' the numeric features (when necessary) using a R function that automatically chooses the best suited transformation function to get Gaussian-looking distributions out of our variables. 
+
+**Note**: Each optimal transformation is defined using the training set. Then these tuned transformations are applied to the training and test sets. It is important for both datasets to be separated at this stage to avoid data contamination which would add an upward bias to our performance results. 
+
+```{r,  message=FALSE}
+# initialise list 
+BNobjects = list()
+
+## Set up empty dataframe for transformed training set
+stand_train_dat = train_dat
+stand_train_dat[TRUE,]=NA
+stand_train_dat[,Quali_vars] = train_dat[,Quali_vars]
+
+## Set up empty dataframe for transformed test set
+stand_test_dat = test_dat
+stand_test_dat[TRUE,]=NA
+stand_test_dat[,Quali_vars] = test_dat[,Quali_vars]
+
+## populate transformed datasets
+for (i in 1:length(Quant_feats)){
+  BNobjects[[Quant_feats[i]]] <- bestNormalize(train_dat[,Quant_feats[i]])
+  stand_train_dat[,Quant_feats[i]] = predict(BNobjects[[Quant_feats[i]]], newdata =train_dat[,Quant_feats[i]])
+  stand_test_dat[,Quant_feats[i]] = predict(BNobjects[[Quant_feats[i]]], newdata =test_dat[,Quant_feats[i]])
+}
+## Not all variables are standardised, need to make sure there are  all standardised during imputation for lasso to work
+```
+
+
+The new numerical distributions are displayed in the tabs below : 
+
+####   {.tabset}
+```{r, results='asis', warning=FALSE,  fig.align="center"}
+## save all distribution plots in list objects
+gg0= list()
+# gg1= list()
+for( i in Quant_feats){
+  gg0[[i]] = get_distribution_hist(stand_train_dat, i)
+}
+## Plot numeric features distributions in training set
+for (Var in Quant_feats) {
+  cat("##### ",Var,"Training \n")
+  print(gg0[[Var]])
+  cat('\n\n')
+}
+```
+
+#### 
+
+
+Once we get rid of the distributions' skewness, we observe that the extreme values no longer look like outliers that should be deleted or capped. We conclude that this first impression was only due to the skewness of the different distributions. 
+
+**Note**: For the algorithms we chose, namely Logistic Regression and Random Forest, there is no assumption of normality for the input variables' distribution. Hence we could have kept the data as is and worked with skewed variables. 
+
+***
+#### MISSING VALUES
+
+Early in the analysis, we observed that the *Weight* and *Recist.cm* variables contained missing values. *Weight* in particular, contains 200 missing values out of 300 observations, which is huge. We are tempted to exclude it, however when looking at the bivariate visualisations and the logistic regressions p-values, we see that this is also one of the features with the highest correlation to *Treatment.response* (when observations are present). We do not want to lose this information; hence we proceed to impute the missing values. 
+
+For each predictor in the data, a bagged tree is created using all of the other predictors in the training set. When a new sample has a missing predictor value, the bagged model is used to predict the value (See more [here](http://rismyhammer.com/ml/Pre-Processing.html)). This is expected to increase the correlation between *Weight* and *Recist.cm* and the other features in the model, and we need to be aware of this to avoid potential multicollinearity. 
+
+
+**Note**: The variables are standardised in the process (centered and scaled). The reason behind this is that most of the variables were already standardised during the previous transformation, except for a few. In order to easily run the algorithms to come (in particular LASSO that is detailed later), we bring all variables to similar scales.
+
+
+```{r imputation transformed data ,message=FALSE}
+# Define current independent variables names
+Features = colnames(cancer_dat)[colnames(cancer_dat)!="Treatment.response"]
+
+# Get data without target variable
+stand_train_features = stand_train_dat[,Features]
+stand_test_features = stand_test_dat[,Features]
+
+# get imputation object from training
+stand_train_knn_impute =  preProcess(stand_train_features, method =c("center","scale","bagImpute"))  #"bagImpute" ?  "knnImpute"
+# note: ### knnImpute standardises the data beforehand
+
+# impute training features
+stand_train_features <- predict(stand_train_knn_impute, stand_train_features)
+
+## use knn model trained with training features to impute validation features
+stand_test_features  <- predict(stand_train_knn_impute, stand_test_features)
+
+# link back to response variable
+stand_train_dat = cbind(Treatment.response=stand_train_dat$Treatment.response,stand_train_features )
+stand_test_dat = cbind(Treatment.response=stand_test_dat$Treatment.response,stand_test_features )
+
+# Remove unecessary objects
+rm(stand_test_features,stand_train_features)
+```
+
+***
+#### -PRELIMINARY- FEATURE SELECTION
+
+Both of the algorithms selected for modelling are particularly sensitive to irrelevant independant variables in the model; hence, a careful feature selection is necessary for these models to perform well. Hence, as a preliminary feature selection step, we exclude the factors with no relationship with the target variable from the list of input features of the future models. 
+
+Looking back to the individual logistic regressions' results, we keep only variables with a stastistically significant coefficient at the 20% level. This level can be considered quite high, however we adopt a risk averse approach: Some correlations might become evident once independent variables are together in the model depending on the algorithm used. Ranbdom Forest in particular will take into account a certain degree of interactions between the different inputs and could reveal the usefulness of some of these variables. 
+
+Here are the remaining numerical input variables after filtering:
+
+```{r,  message=FALSE}
+## take out all numeric features with p_value > 0.20 
+alpha = .20
+Quant_feats = logistic_results$Quant_feats[logistic_results$P_value <alpha] #.20
+stand_train_dat = stand_train_dat[,c(Quali_vars,Quant_feats)]
+train_dat = train_dat[,c(Quali_vars,Quant_feats)]
+
+#Display updated table
+show_table(logistic_results[logistic_results$P_value <alpha,] )
+```
+
+
+Regarding our categorical feature *Sex*, we observed that the variable had a significant relationship with our target response (based on chi-squared test), hence it is kept in the list of model inputs. 
+
+
+
+**Note**: This process is technically incorrect. All the descriptive analysis, including the computation of these p-values was done using the entire dataset. However by doing so, we use the complete information available to us to make decisions about the model, whereas only information from the training set should be available at this stage, in order not to "contaminate" the test set, which is supposed to remain untouched until evaluation of predictions performances. Given the small number of data points, we decided to proceed like this regardless in order to have a good initial overview of the data. For this work, the upward performance bias it may cause is considered negligeable.
+
+
+During modelling, several indicators can be used to learn whether a variable is important to the model or is source of multicollinearity (LASSO, VIF etc.. described in next section). These are used to run the final feature selection and may vary from one model to the other.
+
+***
+### MODELLING
+
+In this section we will train two candidate models: a Logistic Regression algorithm and a Random Forest algorithm. In order to do this, a metric and and validation technique need to be chosen for optimisation. 
+
+*Accuracy* is a very common measure for classification problems, however it is not suited for imbalanced target variables. Indeed, it can lead to over-predicting the majority class. Given it was not instructed to apply different penalties for False Negatives and False Positive classifications, we consider that these are equally undesirable and disregard *Accuracy* as a potential optimiser. The *Area Under the ROC curve* (based on Sensitivity and Specificity) is a better option, however it can also be biased. Ideally, we need an optimiser that focuses on maximising both Sensitivity (or Recall) and Precision at the same time. The _**F1 score**_ does just this as it is the harmonic average of the Precision and Recall. Hence, we use this metric to optimise training of our models. 
+
+For validation, we will use 10-fold cross validation: During each model training, the training set is divided is 10 random sets, and 10 models are trained the same way on 9 of these sets and their performances are evaluated on the remaining 1/10th, called the Kth validation set. All 10 performances are averaged out to provide a more robust performance evaluation of the model on new data than a regular training/validation split method, subject to variation. Then the model is trained on the entire training data and saved. This method is also very convenient for tuning hyperparameter optimally. 
+
+
+```{r, message = FALSE}
+f1 <- function(data, lev = NULL, model = NULL) {
+  f1_val <- MLmetrics::F1_Score(y_pred = data$pred, y_true = data$obs, positive = lev[1])
+  c(F1 = f1_val)
+}
+
+fitControl <- trainControl(## 10-fold CV
+  method = "cv", #repeatedcv",
+  number = 10,
+    # repeats = 10, ## Optional, can go back to method= "cv"
+  ## See summaryFunction & selectionFunction to set optimisation parameters yourself
+  # summaryFunction = twoClassSummary, ## optimises with ROC, displays ROC, sensitivity and specificity
+  summaryFunction = f1, # Optimise with f1 score
+  classProbs = TRUE, ## This goes along with line just before.... What is it ?
+  savePredictions = TRUE
+)
+
+```
+
+
+
+Before training the Logistic Regression algorithm, we still need to make sure that all input variables are essential to the model, as its performances can be affected by irrelevant input variables, and its interpretability can be difficult in the presence of multicollinearity. The LASSO algorithm can help us solve this issue. 
+
+***
+#### Logisitic Regression with LASSO
+
+The Least Absolute Shrinkage and Selection Operator (LASSO) performs L1 regularization, which adds a penalty equal to the absolute value of the magnitude of coefficients. This type of regression is well-suited for models showing high levels of muticollinearity and for automatic variable selection. We expect this model to show us which variables to exclude from the model in order to get rid of irrelevant or redundant factors while keeping predictions performances optimal. 
+
+The penalty is called *Lambda* and is a hyperparameter of the model that needs to be tuned. In order to do so, we run 200 iterations of model training in a loop, with Lambda taking different values between 0.00001 and 0.1. We get a resulting optimal *Lambda* value:
+
+
+```{r, message = FALSE}
+lambda <- 10^seq(-5,-1, length = 200)
+set.seed(2458) 
+lreg_lasso = train(Treatment.response~ .,
+                   data=stand_train_dat, method = 'glmnet',
+                   tuneGrid = expand.grid(alpha = 1, lambda= lambda), ## 1 for Lasso, 0 for Ridge
+                   #standardize = FALSE, ### for cv.glmnet() only
+                   metric = "F1",
+                   trControl=fitControl) 
+
+lreg_lasso$bestTune$lambda
+```
+  
+    
+ 
+The input variables' coefficients from the model obtained with this *Lambda* value are the following: 
+
+```{r, message = FALSE}
+# Model coefficients
+coef(lreg_lasso$finalModel, lreg_lasso$bestTune$lambda)
+```
+  
+  
+
+We can observe that the coefficients for *Volume.cm3* and *Surface.volume.ratio* are now *null*. This is in agreement with what we observed in the correlation matrix earlier: These factors, along with *Surface.cm2* and *Recist.cm* were highly correlated and likely to produce multicollinearity. The LASSO algorithm identified this issue, and kept only the best input variables for prediction, excluding the redundant ones. 
+*Homogeneity.GLCM*  and *Min.value.stat* are also excluded by LASSO, which could indicate that these features are not as important for predictions as we initially thought. 
+
+We save the new list of input variables; they are our new candidates for the Logistic Regression inputs. 
+
+```{r, message = FALSE}
+### Get variables retained for following model
+coefs=as.data.frame(as.matrix(coef(lreg_lasso$finalModel, lreg_lasso$bestTune$lambda)))
+coefs$Variables = row.names(coefs)
+coefs =  coefs[coefs[,1]!=0,]
+lasso_features = coefs$Variables[-1] ## Without intercept
+rm(coefs)
+```
+
+
+***
+#### Logistic Regression
+
+The Logistic Regression is run on the new list of input variables, using 10-fold cross validation and F1 score as optimiser. 
+
+```{r,warning= FALSE}
+## Get only variables retained by LASSO
+stand_train_dat = stand_train_dat[,colnames(stand_train_dat) %in% c("Treatment.response",lasso_features)]
+## run Logistic regression 
+set.seed(3456)
+lreg<-train(Treatment.response~ .
+            ,data=stand_train_dat,method="glm",
+            family="binomial",
+            metric="F1",
+            trControl=fitControl)
+
+# summary(lreg)
+```
+
+See below the optimal cross-validation *F1 Score* obtained:
+```{r,warning= FALSE}
+lreg$results
+```
+  
+  
+  
+To make sure there is no collinearity left in the model we use the Variance Inflation Factor (VIF) from the Logistic Regression. Each input feature has one. It represents the degree of multicollinearity of this variable with the other inputs. As a rule of thumb, a value under 5 is good, there is very little collinearity. A value above 10 indicates a collinearity problem in the model. 
+
+Find the VIFs for every feature below: 
+
+```{r, warning = FALSE}
+car::vif(lreg$finalModel)
+```
+  
+  
+*Surface.cm2* has a relatively high VIF (Probably in part because of its correlation with *Recist.cm*) but it is still an acceptable level. All other variables have a VIF under 5 which indicates that there is no multicollinearity issue in the model. 
+
+This model is now a good candidate; we save it for later comparison, using test data for performances evaluation.
+
+***
+#### Random Forest
+
+The second candidate is Random Forest. As it is equally sensitive to irrelevant or redundant features, we use the knowledge acquired thanks to the Lasso algorithm and choose the same input variables selected for the Logistic Regression model.
+
+Given the size of the data, we favorise small trees for training, with few variables involved and a relatively big minimum node size in order to avoid overfitting with complex trees. The exact value of these hyperparameters, along with the splitting rule (based on Gini Impurity or an [Extremely Randomized Trees implementation](https://link.springer.com/article/10.1007/s10994-006-6226-1)) will be defined by tuning these parameters with 10-fold cross validation. Moreover, we train with a high number of trees to compensate and insure good performance (here a set number 2000 trees).
+
+Again, *F1 Score* is used as metric to optimise. We get the following results:
+
+```{r, warning = FALSE}
+# define grid for rf
+ranger_grid <- expand.grid(mtry = c(2, 3, 4), #number of variables chosen randomly per tree
+                           splitrule = c("gini", "extratrees"),
+                           min.node.size = c( 3,4, 5))
+
+### HOW DO I know how many trees to train ? I don't want to overfit, need enough degrees of freedom
+set.seed(3456)
+ranger_fit <- train(Treatment.response~ .,
+                    data=stand_train_dat, method = 'ranger',
+                    tuneGrid = ranger_grid,
+                    num.trees = 2000,
+                    metric= "F1",
+                    importance = 'permutation', # "impurity"),
+                    trControl=fitControl)
+
+ranger_fit$finalModel
+# ranger_fit ## corresponding F1 is 
+```
+  
+  
+Our final Random forest model uses 2 random variables for each of its 2000 trees, the minimum node size is 5 data points and the splitting rule used is Gini Impurity. The corresponding cross-validation F1 score is *0.7714105*
+
+Our second candidate is ready for performances evaluation and comparison.
+
+***
+### MODELS COMPARISON
+
+__*Question 4. "Compare these models and argue the choice of the best model."*__
+
+To evaluate which model is the most appropriate for our work, we compare the different models' performances on the test set and choose the best one. We penalise False Positive(FP) and False Negative(FN) equally, hence the metric we choose to focus on is *F1 Score* (for the same reasons it was the optimiser used). However, other relevant metrics to help our choice are *Balanced Accuracy* (not *Accuracy*, as we explained earlier), as well as the balance of *Sensitivity* (*Recall*) with *Precision* and potentially with *Specificity*. 
+
+We run the model predictions on the test data (after applying all the transformations tuned using the training data) and obtain the following results:
+
+```{r, warning = FALSE}
+## get Logistic regression test metrics
+lreg_pred = predict(lreg, stand_test_dat)
+lreg_conf = as.data.frame(confusionMatrix(data = lreg_pred, reference = stand_test_dat$Treatment.response, positive = "Yes")$byClass)
+
+# get Random forest Test metrics
+rf_pred = predict(ranger_fit, stand_test_dat)
+rf_conf=as.data.frame(confusionMatrix(data = rf_pred, reference = stand_test_dat$Treatment.response, positive = "Yes")$byClass)
+# Join and display results in a table
+results = round(cbind(lreg_conf,rf_conf),4)
+colnames(results) = c("Logistic Regression", "Random Forest")
+show_table(results, rownames = TRUE)
+```
+
+
+
+Based on this table, it is clear that the Logistic Regression is the better candidate. It performs better than the Random Forest for all metrics stated above. Mainly, *F1 Score* is 0.6076 for Logistic Regression against only 0.5641 for Random forest algorithm. 
+
+Hence, we decide to select the Logistic Regression as our final model. 
+
+**Note**: These predictive performances are not the best we can obtain with this data. However, model explainability is one of our objectives, hence a trade-off is made between predictive power and interpretability of features to find a good balance between the two.
+
+***
+### FEATURES IMPACT
+
+__*Question 5. "Characterize the impact of features on the model predictions."*__
+
+To analyse the role that each feature plays in the Logistic Regression Model, we can observe the input variables' coefficents and their corresponding p-values. This interpretation is only possible because of our work to eliminate multicollinearity in the model (validated by the low features' VIFs).
+
+The Logistic Regression output is displayed below:
+
+```{r, warning = FALSE}
+summary(lreg)
+```
+  
+  
+According to this output, *Sex.female*, *Weight*, *Recist.cm*, *Surface.cm2*, and *Standard.deviation.stat* are statically significant at the 5% level, as all corresponding p-values are under .05, which allow us to reject the null hypothesis.  *Number.of.grey.levels* and *Skewness.stat* variable are significant at the 15% level. Only the *Compactness.1*  factor should not be interpreted with a p-value = 0.84.
+
+Hence we can conclude the at the 15% level, *Sex.female*,  *Recist.cm*, *Number.of.grey.levels* and *Standard.deviation.stat* contribute postively to predicting that a patient is going to respond to treatment, while *Weight*, *Surface.cm2* and *Skewness.stat* contribute negatively to predicting a positive treatment response. 
+
+If the Random Forest was our final model we could look at the Variable Importance of the different inputs in the model. This measure, obtained using [permutation techniques](https://topepo.github.io/caret/variable-importance.html) (could have used gini Impurity as well), allows us to assess the relative degree of influence of each feature on the predictions, but it does not tell us whether each feature contribute positively or negatively to predicting a positive treatment response. This however is something that we can infer by looking at the table of individual logistic regressions coefficients produced in the descriptive analysis. 
+
+Find the Variable Importance in the graph below:
+
+```{r, warning = FALSE, message=FALSE, fig.align="center"}
+ggplot(varImp(ranger_fit)) +
+  ggtitle("Variable Importance based on \n Random Forest Permutations Technique")+
+  # labs( x=column, y="Frequency")+
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  theme(
+    text = element_text(size=14,face="bold"),
+    plot.title = element_text(hjust = 0.5,size=16),
+    axis.text.x =element_text(hjust=1,vjust=0.9),
+    plot.margin = unit(c(0.8,0.8,0.8,0.8), "cm"))
+
+```
+
+
+As you can see, the *Sex* variable is preponderant in the treatment predictions. *Surface.cm2* and *Weight* are also very important predictors. The other variables play a smaller role in predictions, in particular *Skewness.stat* which is null, meaning that in theory, this feature could be taken out of the model without affecting its predictive performances. 
+
+
+***
+### MODEL ROBUSTNESS
+
+
+__*Question 6. "How could the robustness of the model be assessed and the individual predictions derived from it be
+justified?"*__
+
+A model is considered to be robust if its output and forecasts are consistently accurate even when presented with new data.
+
+One way of evaluating the final model robustness is to evaluate its predictive performances on new data. This is something we have done when training the algorithm on the training set and evaluating its performances on the test set. We can observe that the predicting performances decreased by 20 percentage points (from F1 = 0.8150 to F1= 0.6076) between the cross-validation *F1 Score* (from training) and the test *F1 Score*, which is a huge drop in performance. A higher prediction performance is expected on the training set, as it is used for modelling and is hence predicting itself, leading to a bit of overfit; however, 20 points is particularly bad, and indicates that the model robustness is weak. 
+
+There are several potential explanations for this. The first that comes to mind is the small sample size. Indeed, the training set is small, hence it is unlikely to be an accurate representation of its true distribution and generalises badly to new data. Aknowledging this, it might have been a bad choice to transform and standardise the training and test data based on the training distributions, as the assumption for this application is that the distributions in training and test are similar (coming from the same true distribution, that should be well-represented in training).
+
+Moreover, the data in the test set comes from the same 'ABC' hospital as the the training set. Model robustness can be challenged when predicting on new data from other hospitals, as the nature of some variables might change due to biases linked to the environment (air pollution in the area, local diet, but also factors such as variation in features recording techniques creating biases etc...). For these reasons our model performances are expected to decrease even more. 
+
+
+
+__*Question 7. "Would you propose this model for use in clinical routine?"*__
+
+
+This model is not ready for use in a clinical routine. The final algorithm performances are still relatively weak, with a balanced accuracy of 0.65, which mean that in the presence of new balanced data, the model would predict the wrong treatment outcome about 35% of the time. This model is only 15 percentage points better than a random model predicting "Yes" and "No" alternatively (which would give an accuracy of about 50% on balanced data).
+
+Moreover, the discussion about the model's lack of robustness in the previous section holds true and is a strong argument against deploying it for use in clinical routine.  
+
+
+
+***
+# SECONDARY OBJECTIVE
+
+
+*Each patient was followed after treatment initiation until progression, death. Some patients were censored
+(e.g., lost of follow-up). Clinicians want to predict Progression-Free Survival (PFS) probability over time for
+each patient, based on the information collected at treatment initiation time.*
+
+__*Question 8. "Explain what kind of analysis could be performed if we deal with the secondary endpoint (prediction
+of PFS outcome). What would be the candidate algorithms, and what metrics could be used? What
+software solutions (packages, functions) would you use to perform this analysis?"*__
+
+***
+## DISCUSSION
+
+The secondary objective should be treated using [*Survival Analysis*](https://en.wikipedia.org/wiki/Survival_analysis#:~:text=Survival%20analysis%20is%20a%20branch,and%20failure%20in%20mechanical%20systems.) (applied to Progression Free Survival). This is a statistical field studying the expected duration of time until one or more events happen, such as death.
+
+Candidate algorithms would be survival algorithms such as Cox Proportional Hazards Model or Random Survival Forest to name but a few. These models are specifically designed to return/predict survival curves as opposed to a single values. These represent the predicted probability of survival (or PF survival) of patients over time. These models are also designed to handle censored values, which is quite specific to this field.
+
+Metrics for evaluation of model predictions performances include but are not limited to the *Simple Hazard Ratio*, the *Brier Score*, the *Log-Rank test*, etc..
+
+
+***
+## SURVIVAL MODELLING EXAMPLE
+
+
+We illustrate survival modelling, by implementing a basic Random survival Forest algorithm using the **ggRandomForests** package in R.
+
+First, we need to artificially create some variables (usually obtained from patients follow ups): *Event* and *Event.Time.*
+
+- *Event* variable is a boolean that can be Progression_or_Death (TRUE), or Censored (FALSE)
+- *Event.Time* variable is a numeric variable that represents the number of days after the treatment initiation time the corresponding T/F event takes place. 
+
+These 2 variables will be created based on the Treatment.response variable, and randomness.
+
+Given the data we are working with, let's assume any patient with *Treatment.response* == "No" had a Progression or Death event within 3 months of starting the treatment (Event.Time < 90). For patients with Treatment.response == "Yes", the *Event* value will be randomly distributed, and the *Event.Time* will be variable and above 90.
+
+```{r, message = FALSE}
+cancer_dat$Event.Time =round(runif(nrow(cancer_dat),min=0, max =90))
+cancer_dat$Event.Time[cancer_dat$Treatment.response=="Yes"] = 
+  round(runif(nrow(cancer_dat[cancer_dat$Treatment.response=="Yes",]),min=91, max =547)) # A year and a half
+
+cancer_dat$Event =  sample(c(TRUE,FALSE) , nrow(cancer_dat), replace=TRUE, prob=c(0.5, 0.5) )
+cancer_dat$Event[cancer_dat$Treatment.response=="No"] = rep(  TRUE)
+```
+
+
+We first get an averaged Progress-Free Survival probability rate plotted over time:
+
+```{r,  message=FALSE,fig.align="center", warning=FALSE}
+gg_dta <- gg_survival(interval = "Event.Time",
+                      censor = "Event",
+                      # by = "Treatment.response", # returns error
+                      data = cancer_dat)
+
+plot(gg_dta) +
+  labs(title= "PF Survival Probability over Time", y = "PF Survival Probability", x = "Observation Time (Days)") +
+  theme(
+    text = element_text(size=14,face="bold"),
+    plot.title = element_text(hjust = 0.5,size=16),
+    axis.text.x =element_text(hjust=1,vjust=0.9),
+    plot.margin = unit(c(0.8,0.8,0.8,0.8), "cm"))
+
+
+```
+
+
+We then implement the model (no training and test set evaluation as this basic example). Our model allows to get individual predictions of probability rate over time based on their features:
+
+```{r,  message=FALSE,fig.align="center", warning=FALSE}
+
+### Model
+rfsrc_pbc <- rfsrc(Surv(Event.Time, Event) ~ ., data = cancer_dat %>% select(-Treatment.response), #-Treatment.response
+                   nsplit = 10, na.action = "na.impute",
+                   tree.err = TRUE,importance = TRUE)
+
+
+ggRFsrc <- plot(gg_rfsrc(rfsrc_pbc), alpha = 0.2) +
+  scale_color_manual(name = "Event", values =c( 'dodgerblue4','hotpink3'), labels = c("Censored", "Progresson or Death") ) +
+  theme(legend.position = "bottom") +
+  labs(y = "Survival Probability", x = "Time (Days)") +
+  coord_cartesian(ylim = c(-0.01, 1.01))+
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))+
+  ggtitle("Survival Probability of Every Patient \nover Time") +
+  theme(
+    text = element_text(size=14,face="bold"),
+    plot.title = element_text(hjust = 0.5,size=16),
+    axis.text.x =element_text(hjust=1,vjust=0.9),
+    plot.margin = unit(c(0.8,0.8,0.8,0.8), "cm"))
+show(ggRFsrc)
+
+
+```
+
+
+By looking at the visualisation, it seems the censored patients have a Progress Free Survival probability on average higher that the others: the blue curves tend to be located higher on the graph. 
+
+
+***
+# CONCLUSION
+
+***
+## ANALYSIS SUMMARY
+
+
+__*Question 9.^[We assume question 9 is only about the primary objective of this study] "Finally, summarize the results of the complete overall statistical analysis for a non-specialized public (clinicians)."*__
+
+
+In this study,our goal was to build a statistical model to predict the patient's response to a cancer treatment Z three months after protocol initiation. From initiation day, we had demographic features such as patient's sex and weight for example, and radiomics features such as the lesion's surface in cm^2^, volume in cm^3^, statistical values about the grey intensity etc.. In the first step of this work, we ran a descriptive analysis to observe the individual distribution of these features and then we looked at how they were distributed depending on the treatment response as it was the variable to predict. When the variables distributions are different for patients responding to the treatment and patients that are not, we can infer that these variables have an potential influence on the answer; hence we retained these to be included in the model. 
+
+We then started "preprocessing" the data: We chose the most appropriate algorithm candidates for the work and applied a series of statistical methods to make sure the model performances would be good while keeping the interpretation possible to study which features affected the results and how. The candidates were then trained and compared, and the Logistic Regression model was selected as our final model. 
+
+In a new population of patients, half of which respond positively to the treatment, we estimated that our model could successfully predict 65% of treatment responses correctly. The main features that contribute to this prediction are the patient's sex, their weight, and lesion's surface in cm^2^. Indeed, females are more likely to get a positive treatment response, and weight and lesion's surface affect this likelihood negatively.
+
+Still we concluded that this model was not ready for clinical routines: The predictions results are not yet satisfying, and the model does not seem robust against new data. We don't exclude that its performances decrease when presented with patients from new hospitals for example. First, more patient records are needed to improve the quality of its predictions. 
+
+
+***
+## DISCUSSION
+
+
+__*Question 10. "Discuss about possible improvements (notably if you had more time to perform the analysis)."*__
+
+
+If there was more time to run this analysis, there are several alternatives we could explore:  
+First, we could train the models without transforming and standardising variables and compare the results, as we suspect that the training data distribution was not representative of the true distribution and that this method deteriorated the data quality. Random Forest could also be run without imputing values beforehand.  
+Some other sets of variables could be considered for input variables. If we accept to relax some constraints dictated by the need for interpretability of features, we could maximise predictions potential: Random Forests is likely to perform better with more variables to choose from to build trees; we did not give it a chance to choose its own inputs based on variable importance. KNN would also become a viable candidate for comparison.  
+Finally, we could explore resampling techniques to remedy the small sample size problem. Also, oversampling the minority class could be a solution to get more data observations while using accuracy as optimiser measure once the data is artificially balanced. 
+
+This being said, past a certain threshold, the only solution to improve prediction performances on new data would be to access more of it:   
+In terms of variables, more grey-level related factors are extracted from radiographic medical images that what is provided for this work. It seems that our model barely uses the first and second-order statistic features available; one explanation could be that this information is better conveyed in other radiomics features. we would need to access these to find out.
+A simple example would be to use the 10th and 90th percentile of grey intensity rather than min and max intensities, as this would be a more robust alternative.  
+About the non-radiomic features, weight looks very important when it is not missing. Its importance needs to be emphasied to clinicians to enforce a more systematic recording of its value. Also, there are several factors that could explain the underlying relationship between weight and treatment response in more details. Hence, it would be good to collect features such as cholesterol, or daily physical activity etc...  
+Finally, in terms of observations, more is better. With more patients to learn from, we can train better and more robust models, with higher scores and less incline to performance deterioration when faced with new data. To make sure of the latter, we would ideally access data from several different hospitals to make sure the predictions generalise well.
+
+
+
+
