@@ -1,5 +1,5 @@
 ---
-title: "Treatment Response Study"
+title: "Cancer Progress & Treatment Response Study"
 author: "Théo Dufort"
 date: "01 October 2023"
 output:
@@ -25,12 +25,11 @@ output:
     toc_collapsed: true
     toc_depth: 4  # upto three depths of headings (specified by #, ## and ###)
     # number_sections: true  ## if you want number sections at each table header
-    theme: united #cerulean #readable  # many options for theme, this one is my favorite.
-    highlight: tango  # specifies the syntax highlighting style
+    # theme: united #cerulean #readable  # many options for theme, this one is my favorite.
+    highlight: "pygments"  # specifies the syntax highlighting style for CODE
     code_folding: hide
     fig.caption: TRUE
     fig_height: 6  ## Default: should change if specified otherwise
-    
   pdf_document: default
 always_allow_html: true
 
@@ -163,7 +162,8 @@ show_table <- function(temp_sum, title= "", rownames = FALSE, tab_num = TABLE_NU
                 rownames = rownames, filter = "top",class = 'cell-border stripe', editable = TRUE, 
                 extensions = 'Buttons', options = list(dom = 'rtip', #dom = 'lBfrtip',
                                                        #buttons = c('copy', 'csv', 'excel',  'print'),
-                                                       autoWidth=TRUE, #scrollX=TRUE,
+                                                       autoWidth=TRUE, 
+                                                       scrollX=TRUE,
                                                        lengthChange=TRUE,
                                                        pageLength=20))
 }
@@ -386,6 +386,7 @@ cancer_dat = cancer_dat %>% mutate(
 
 ***
 
+
 ### Producing New Variables
 
 
@@ -497,7 +498,7 @@ get_bivariate_barplot = function(data, column, cat_response){
   
   # barplot code
   p= ggplot(data,aes_string(x=column, fill = cat_response)) +
-  geom_bar(position = "dodge",  colour="black",) +
+  geom_bar(position = "dodge",  colour="black",alpha = 0.8) +
   labs( y="Count") +
   scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
   scale_fill_manual(values=c('hotpink3', 'dodgerblue4')) +
@@ -518,7 +519,7 @@ get_bivariate_barplot = function(data, column, cat_response){
   
   
   p2=ggplot(proportions,aes_string(x=column, y="Proportion", fill = cat_response)) +
-  geom_col(stat = "identity",  colour="black",) +
+  geom_col(stat = "identity",  colour="black",alpha=0.8) +
   scale_y_continuous(labels = scales::label_percent(accuracy = 1), #percent
                      breaks = scales::pretty_breaks(n = 10)) +
   scale_fill_manual(values=c('hotpink3', 'dodgerblue4')) +
@@ -806,6 +807,7 @@ To summarise, the models selected for further work are the Logistic Regression a
 In the preprocessing phase, we first proceed to preliminary feature selection, based on previous analysis. Then, we split the dataset between training and test sets: The first is used to tune the hyperparameters and train the models, the second is left out until the end and is used to evaluate the models' performances on new, unseen data. After this, we handle potential outliers and impute missing values. Finally, we can apply some variable transformations (eg. BoxCox or regular standardisation).
 
 
+
 ***
 #### -Preliminary- Feature Selection
 
@@ -923,7 +925,7 @@ We decide not to treat outliers further for now.
 # 
 ```
 
-
+***
 #### Variable Transformation
 
 
@@ -1043,7 +1045,7 @@ lreg<-train(Treatment.response~ .
             ,data=stand_train_small_dat,method="glm",
             family="binomial",
             # metric="F1", ## useless, no hyperparameter left to train, classic max loglikelihood optimised
-            trControl=  trainControl(summaryFunction = f1)  # Optimise with f1 score
+            trControl=  trainControl(summaryFunction = f1)  # Does not Optimise with f1 score but displays it
  # Cross validation not necessary anymore
             )
 
@@ -1171,6 +1173,13 @@ p1= ggplot(varImp(ranger_fit)) +
     plot.title = element_text(hjust = 0.5,size=16),
     axis.text.x =element_text(hjust=1,vjust=0.9),
     plot.margin = unit(c(0.8,0.8,0.8,0.8), "cm"))
+
+## Note: change color
+p1[["layers"]][[1]][["aes_params"]]$fill = "dodgerblue4"
+p1[["layers"]][[1]][["aes_params"]]$colour = "black"
+p1[["layers"]][[1]][["aes_params"]]$size = 0.5
+p1[["layers"]][[1]][["aes_params"]]$alpha = 0.8
+
 p1
 ```
 
